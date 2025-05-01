@@ -12,26 +12,25 @@ import (
 )
 
 const (
-	// Port to listen on within the Nitro Enclave
-	vsockPort = uint32(8080)
 	// CID 16 for the enclave
 	enclaveCID = uint32(16)
+	// Port to listen on within the Nitro Enclave
+	vsockPort = uint32(8080)
 )
 
 func main() {
 	// Setup logging
 	log.SetOutput(os.Stdout)
 	log.SetPrefix("[nitro-enclave-server] ")
-	log.Printf("Starting Nitro Enclave Go Server on vsock port %d", vsockPort)
+	log.Printf("Starting Nitro Enclave Go Server on CID %d, port %d", enclaveCID, vsockPort)
 
-	// Create a VSOCK listener bound to CID 16
-	listener, err := vsock.Listen(vsockPort, &vsock.Config{
-		ContextID: enclaveCID,
-	})
+	// Create a VSOCK listener
+	// Note: The actual mdlayher/vsock API might have changed, this should use the current API
+	l, err := vsock.ListenContextID(enclaveCID, vsockPort)
 	if err != nil {
 		log.Fatalf("Failed to create vsock listener: %v", err)
 	}
-	defer listener.Close()
+	defer l.Close()
 
 	log.Printf("VSOCK server listening on CID %d port %d", enclaveCID, vsockPort)
 
@@ -45,7 +44,7 @@ func main() {
 	// Start accepting connections in a goroutine
 	go func() {
 		for {
-			conn, err := listener.Accept()
+			conn, err := l.Accept()
 			if err != nil {
 				errChan <- fmt.Errorf("failed to accept connection: %v", err)
 				return
