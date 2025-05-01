@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/mdlayher/vsock"
@@ -25,8 +28,7 @@ func main() {
 	log.Printf("Starting Nitro Enclave Go Server on CID %d, port %d", enclaveCID, vsockPort)
 
 	// Create a VSOCK listener
-	// Note: The actual mdlayher/vsock API might have changed, this should use the current API
-	l, err := vsock.ListenContextID(enclaveCID, vsockPort)
+	l, err := vsock.ListenContextID(enclaveCID, vsockPort, nil)
 	if err != nil {
 		log.Fatalf("Failed to create vsock listener: %v", err)
 	}
@@ -51,7 +53,7 @@ func main() {
 			}
 
 			// Handle each connection in a new goroutine
-			go handleConnection(conn)
+			go handleHTTPConnection(conn)
 		}
 	}()
 
@@ -66,25 +68,88 @@ func main() {
 	log.Println("Server shutdown complete")
 }
 
-func handleConnection(conn net.Conn) {
+func handleHTTPConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Log connection details
-	log.Printf("Handling connection from %s", conn.RemoteAddr())
+	// Use a buffered reader to read HTTP request
+	reader := bufio.NewReader(conn)
 
-	// Simple protocol: Read request and send acknowledgement
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
+	// Read the first line to get the request method and path
+	requestLine, err := reader.ReadString('\n')
 	if err != nil {
-		log.Printf("Error reading from connection: %v", err)
+		log.Printf("Error reading request line: %v", err)
 		return
 	}
 
-	log.Printf("Received %d bytes: %s", n, buffer[:n])
+	// Parse the request line
+	parts := strings.Fields(requestLine)
+	if len(parts) < 3 {
+		log.Printf("Invalid HTTP request line: %s", requestLine)
+		return
+	}
+	method := parts[0]
+	path := parts[1]
 
-	// Send acknowledgement response
-	response := []byte(`{"status":"success","message":"Request acknowledged by Nitro Enclave"}`)
-	_, err = conn.Write(response)
+	// Read headers until we hit an empty line
+	headers := make(map[string]string)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			log.Printf("Error reading header: %v", err)
+			return
+		}
+
+		// Remove trailing CRLF
+		line = strings.TrimRight(line, "\r\n")
+
+		// Empty line marks end of headers
+		if line == "" {
+			break
+		}
+
+		// Parse header
+		colonIndex := strings.Index(line, ":")
+		if colonIndex > 0 {
+			key := strings.TrimSpace(line[:colonIndex])
+			value := strings.TrimSpace(line[colonIndex+1:])
+			headers[key] = value
+		}
+	}
+
+	// Check if there's a request body
+	var body string
+	if contentLength, exists := headers["Content-Length"]; exists {
+		// If there's content, read it
+		// Note: This is a simplified approach and may not handle all HTTP cases
+		bodyBytes := make([]byte, 0)
+		if cl, err := fmt.Sscanf(contentLength, "%d", &bodyBytes); err == nil && cl > 0 {
+			bodyBytes = make([]byte, cl)
+			_, err = reader.Read(bodyBytes)
+			if err != nil {
+				log.Printf("Error reading body: %v", err)
+			}
+			body = string(bodyBytes)
+		}
+	}
+
+	// Log the request details
+	log.Printf("Received HTTP %s request for %s from %s", method, path, conn.RemoteAddr())
+	if body != "" {
+		log.Printf("Request body: %s", body)
+	}
+
+	// Prepare the HTTP response
+	jsonResponse := `{"status":"success","message":"Request acknowledged by Nitro Enclave"}`
+	httpResponse := fmt.Sprintf(
+		"HTTP/1.1 200 OK\r\n"+
+		"Content-Type: application/json\r\n"+
+		"Content-Length: %d\r\n"+
+		"\r\n"+
+		"%s",
+		len(jsonResponse), jsonResponse)
+
+	// Send the HTTP response
+	_, err = conn.Write([]byte(httpResponse))
 	if err != nil {
 		log.Printf("Error sending response: %v", err)
 	}
