@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,9 +12,6 @@ import (
 )
 
 const (
-	// VSOCK configurations
-	// CID (Context ID) 3 is for the parent EC2 instance
-	parentCID = uint32(3)
 	// Port to listen on within the Nitro Enclave
 	vsockPort = uint32(8080)
 )
@@ -26,8 +23,8 @@ func main() {
 	log.Printf("Starting Nitro Enclave Go Server on vsock port %d", vsockPort)
 
 	// Create a VSOCK listener
-	// VM_VSOCK_CID_ANY (0xFFFFFFFF) means listen for connections from any CID
-	listener, err := vsock.Listen(vsock.CIDAny, vsockPort)
+	// VM_VSOCK_CID_ANY (-1u or 0xFFFFFFFF) means listen for connections from any CID
+	listener, err := vsock.ListenContextID(vsock.ContextIDHost, vsockPort, nil)
 	if err != nil {
 		log.Fatalf("Failed to create vsock listener: %v", err)
 	}
@@ -67,14 +64,20 @@ func main() {
 	log.Println("Server shutdown complete")
 }
 
-func handleConnection(conn *vsock.Conn) {
+func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Log connection details
-	local, remote := conn.LocalAddr(), conn.RemoteAddr()
-	log.Printf("Handling connection from CID %d Port %d to CID %d Port %d",
-		remote.(*vsock.Addr).ContextID, remote.(*vsock.Addr).Port,
-		local.(*vsock.Addr).ContextID, local.(*vsock.Addr).Port)
+	// Log connection details if it's a vsock connection
+	if vsockConn, ok := conn.(*vsock.Conn); ok {
+		local, remote := vsockConn.LocalAddr(), vsockConn.RemoteAddr()
+		vsockLocal, _ := local.(*vsock.Addr)
+		vsockRemote, _ := remote.(*vsock.Addr)
+		log.Printf("Handling connection from CID %d Port %d to CID %d Port %d",
+			vsockRemote.ContextID, vsockRemote.Port,
+			vsockLocal.ContextID, vsockLocal.Port)
+	} else {
+		log.Printf("Handling connection from %s", conn.RemoteAddr())
+	}
 
 	// Simple protocol: Read request and send acknowledgement
 	buffer := make([]byte, 1024)
