@@ -14,6 +14,8 @@ import (
 const (
 	// Port to listen on within the Nitro Enclave
 	vsockPort = uint32(8080)
+	// CID 16 for the enclave
+	enclaveCID = uint32(16)
 )
 
 func main() {
@@ -22,15 +24,16 @@ func main() {
 	log.SetPrefix("[nitro-enclave-server] ")
 	log.Printf("Starting Nitro Enclave Go Server on vsock port %d", vsockPort)
 
-	// Create a VSOCK listener
-	// VM_VSOCK_CID_ANY (-1u or 0xFFFFFFFF) means listen for connections from any CID
-	listener, err := vsock.ListenContextID(vsock.ContextIDHost, vsockPort, nil)
+	// Create a VSOCK listener bound to CID 16
+	listener, err := vsock.Listen(vsockPort, &vsock.Config{
+		ContextID: enclaveCID,
+	})
 	if err != nil {
 		log.Fatalf("Failed to create vsock listener: %v", err)
 	}
 	defer listener.Close()
 
-	log.Printf("VSOCK server listening on port %d", vsockPort)
+	log.Printf("VSOCK server listening on CID %d port %d", enclaveCID, vsockPort)
 
 	// Handle shutdown gracefully
 	shutdown := make(chan os.Signal, 1)
@@ -67,17 +70,8 @@ func main() {
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Log connection details if it's a vsock connection
-	if vsockConn, ok := conn.(*vsock.Conn); ok {
-		local, remote := vsockConn.LocalAddr(), vsockConn.RemoteAddr()
-		vsockLocal, _ := local.(*vsock.Addr)
-		vsockRemote, _ := remote.(*vsock.Addr)
-		log.Printf("Handling connection from CID %d Port %d to CID %d Port %d",
-			vsockRemote.ContextID, vsockRemote.Port,
-			vsockLocal.ContextID, vsockLocal.Port)
-	} else {
-		log.Printf("Handling connection from %s", conn.RemoteAddr())
-	}
+	// Log connection details
+	log.Printf("Handling connection from %s", conn.RemoteAddr())
 
 	// Simple protocol: Read request and send acknowledgement
 	buffer := make([]byte, 1024)
@@ -87,7 +81,7 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
-	log.Printf("Received %d bytes", n)
+	log.Printf("Received %d bytes: %s", n, buffer[:n])
 
 	// Send acknowledgement response
 	response := []byte(`{"status":"success","message":"Request acknowledged by Nitro Enclave"}`)
